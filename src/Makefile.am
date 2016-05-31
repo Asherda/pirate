@@ -271,6 +271,7 @@ BITCOIN_CORE_H = \
   mruset.h \
   net.h \
   netbase.h \
+	netaddress.h \
   notaries_staked.h \
   noui.h \
 	params.h \
@@ -598,6 +599,7 @@ libbitcoin_common_a_SOURCES = \
   komodo_notary.cpp \
   komodo_pax.cpp \
   komodo_utils.cpp \
+	netaddress.cpp \
   netbase.cpp \
   metrics.cpp \
   primitives/block.cpp \
