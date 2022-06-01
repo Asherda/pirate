@@ -7591,7 +7591,13 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             if (addr.nTime <= 100000000 || addr.nTime > nNow + 10 * 60)
                 addr.nTime = nNow - 5 * 24 * 60 * 60;
             pfrom->AddAddressKnown(addr);
+
             bool fReachable = IsReachable(addr);
+
+            if (fReachable) {
+                LogPrintf("Address Recieved %s: %s\n", GetNetworkName(addr.GetNetwork()), addr.ToString());
+            }
+
             if (addr.nTime > nSince && !pfrom->fGetAddr && vAddr.size() <= 10 && addr.IsRoutable())
             {
                 // Relay to a limited number of other nodes
@@ -7616,9 +7622,17 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                         hashKey = Hash(BEGIN(hashKey), END(hashKey));
                         mapMix.insert(make_pair(hashKey, pnode));
                     }
+
+                    vector<CAddress> vAddr = addrman.GetAddr(pfrom->addrLocal.GetNetwork());
                     int nRelayNodes = fReachable ? 2 : 1; // limited relaying of addresses outside our network(s)
-                    for (multimap<uint256, CNode*>::iterator mi = mapMix.begin(); mi != mapMix.end() && nRelayNodes-- > 0; ++mi)
+                    for (multimap<uint256, CNode*>::iterator mi = mapMix.begin(); mi != mapMix.end() && nRelayNodes-- > 0; ++mi) {
                         ((*mi).second)->PushAddress(addr);
+
+                        BOOST_FOREACH(const CAddress &kaddr, vAddr) {
+                            ((*mi).second)->PushAddress(kaddr);
+                            LogPrint("address", "Pushing Address %s: %s\n", GetNetworkName(addr.GetNetwork()), addr.ToString());
+                        }
+                    }
                 }
             }
             // Do not store addresses outside our network
@@ -7726,9 +7740,11 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         pfrom->fSentAddr = true;
 
         pfrom->vAddrToSend.clear();
-        vector<CAddress> vAddr = addrman.GetAddr();
-        BOOST_FOREACH(const CAddress &addr, vAddr)
-        pfrom->PushAddress(addr);
+        vector<CAddress> vAddr = addrman.GetAddr(pfrom->addrLocal.GetNetwork());
+        BOOST_FOREACH(const CAddress &addr, vAddr) {
+            pfrom->PushAddress(addr);
+            LogPrint("address", "Pushing Address %s: %s\n", GetNetworkName(addr.GetNetwork()), addr.ToString());
+        }
     }
     // temporary optional nspv message processing
     else if (GetBoolArg("-nspv_msg", DEFAULT_NSPV_PROCESSING) &&

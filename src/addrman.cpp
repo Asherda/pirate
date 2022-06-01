@@ -365,7 +365,7 @@ CAddrInfo CAddrMan::Select_(bool newOnly)
 
     // Use a 50% chance for choosing between tried and new table entries.
     if (!newOnly &&
-       (nTried > 0 && (nNew == 0 || RandomInt(2) == 0))) { 
+       (nTried > 0 && (nNew == 0 || RandomInt(2) == 0))) {
         // use a tried node
         double fChanceFactor = 1.0;
         while (1) {
@@ -410,7 +410,7 @@ CAddrInfo CAddrMan::Select_(bool newOnly)
             fChanceFactor *= 1.2;
         }
     }
-    
+
     return CAddrInfo();
 }
 
@@ -492,11 +492,15 @@ int CAddrMan::Check_()
 }
 #endif
 
-void CAddrMan::GetAddr_(std::vector<CAddress>& vAddr)
+void CAddrMan::GetAddr_(std::vector<CAddress>& vAddr, enum Network net)
 {
     unsigned int nNodes = ADDRMAN_GETADDR_MAX_PCT * vRandom.size() / 100;
     if (nNodes > ADDRMAN_GETADDR_MAX)
         nNodes = ADDRMAN_GETADDR_MAX;
+
+    // for (std::map<int, CAddrInfo>::iterator it = mapInfo.begin(); it != mapInfo.end(); ++it) {
+    //     LogPrintf("Known Addresses: %s %s\n ", GetNetworkName((*it).second.GetNetwork()), (*it).second.ToString());
+    // }
 
     // gather a list of random nodes, skipping those of low quality
     for (unsigned int n = 0; n < vRandom.size(); n++) {
@@ -508,9 +512,33 @@ void CAddrMan::GetAddr_(std::vector<CAddress>& vAddr)
         assert(mapInfo.count(vRandom[n]) == 1);
 
         const CAddrInfo& ai = mapInfo[vRandom[n]];
-        if (!ai.IsTerrible())
+
+
+        if (nNodes < ADDRMAN_GETADDR_MIN_FILTER) {
             vAddr.push_back(ai);
+        } else {
+            if (!ai.IsTerrible())
+                vAddr.push_back(ai);
+        }
     }
+
+    if (net != NET_UNROUTABLE) {
+
+        int k = 0;
+        for (std::map<int, CAddrInfo>::iterator it = mapInfo.begin(); it != mapInfo.end(); ++it) {
+            if ((*it).second.GetNetwork() == net) {
+                vAddr.erase(vAddr.begin());;
+                vAddr.push_back((*it).second);
+                LogPrintf("Adding preferred address %s\n", (*it).second.ToString());
+                k++;
+            }
+
+            if (k>25)
+              break;
+        }
+
+    }
+
 }
 
 void CAddrMan::Connected_(const CService& addr, int64_t nTime)

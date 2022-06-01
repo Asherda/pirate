@@ -8,6 +8,8 @@
 #include <utiltime.h>
 #include <util.h>
 
+#include <boost/thread.hpp>
+
 #include <codecvt>
 #include <cwchar>
 #include <locale>
@@ -147,6 +149,7 @@ void Sock::SendComplete(const std::string& data,
     size_t sent{0};
 
     for (;;) {
+
         const ssize_t ret{Send(data.data() + sent, data.size() - sent, MSG_NOSIGNAL)};
 
         if (ret > 0) {
@@ -192,6 +195,7 @@ std::string Sock::RecvUntilTerminator(uint8_t terminator,
     // at a time is about 50 times slower.
 
     for (;;) {
+
         if (data.size() >= max_data) {
             throw std::runtime_error(
                 strprintf("Received too many bytes without a terminator (%u)", data.size()));

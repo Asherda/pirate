@@ -254,7 +254,7 @@ int GetnScore(const CService& addr)
 bool IsPeerAddrLocalGood(CNode *pnode)
 {
     return fDiscover && pnode->addr.IsRoutable() && pnode->addrLocal.IsRoutable() &&
-           !IsLimited(pnode->addrLocal.GetNetwork());
+           IsReachable(pnode->addrLocal.GetNetwork());
 }
 
 // pushes our own address to a peer
@@ -288,7 +288,7 @@ bool AddLocal(const CService& addr, int nScore)
     if (!fDiscover && nScore < LOCAL_MANUAL)
         return false;
 
-    if (IsLimited(addr))
+    if (!IsReachable(addr))
         return false;
 
     LogPrintf("AddLocal(%s,%i)\n", addr.ToString(), nScore);
@@ -317,26 +317,6 @@ bool RemoveLocal(const CService& addr)
     LogPrintf("RemoveLocal(%s)\n", addr.ToString());
     mapLocalHost.erase(addr);
     return true;
-}
-
-/** Make a particular network entirely off-limits (no automatic connects to it) */
-void SetLimited(enum Network net, bool fLimited)
-{
-    if (net == NET_UNROUTABLE || net == NET_INTERNAL)
-        return;
-    LOCK(cs_mapLocalHost);
-    vfLimited[net] = fLimited;
-}
-
-bool IsLimited(enum Network net)
-{
-    LOCK(cs_mapLocalHost);
-    return vfLimited[net];
-}
-
-bool IsLimited(const CNetAddr &addr)
-{
-    return IsLimited(addr.GetNetwork());
 }
 
 /** vote for a local address */
@@ -476,8 +456,14 @@ CNode* ConnectNode(CAddress addrConnect, const char *pszDest)
     bool proxyConnectionFailed = false;
     bool connected = false;
     std::unique_ptr<Sock> sock;
-    // CAddress addr_bind;
-    // assert(!addr_bind.IsValid());
+
+    if (!addrConnect.IsValid()) {
+        return NULL;
+    }
+
+    if (!IsReachable(addrConnect)) {
+        return NULL;
+    }
 
     if (addrConnect.GetNetwork() == NET_I2P && m_i2p_sam_session.get() != nullptr) {
             i2p::Connection conn;
@@ -610,7 +596,7 @@ CNode* ConnectNode(CAddress addrConnect, const char *pszDest)
     return NULL;
 }
 
-void CNode::CloseSocketDisconnect()
+void CNode::CloseSocketDisconnect(bool sendShutDownSSL)
 {
     fDisconnect = true;
 
@@ -621,6 +607,17 @@ void CNode::CloseSocketDisconnect()
         {
             try
             {
+                if (ssl)
+                {
+                    unsigned long err_code = 0;
+                    if (sendShutDownSSL)
+                    {
+                        tlsmanager.waitFor(SSL_SHUTDOWN, hSocket, ssl, (DEFAULT_CONNECT_TIMEOUT / 1000), err_code);
+                    }
+                    SSL_free(ssl);
+                    ssl = NULL;
+                }
+                CloseSocket(hSocket);
                 LogPrint("net", "disconnecting peer=%d\n", id);
             }
             catch(std::bad_alloc&)
@@ -629,15 +626,6 @@ void CNode::CloseSocketDisconnect()
                 // std::bad_alloc exception when instantiating internal objs for handling log category
                 LogPrintf("(node is probably shutting down) disconnecting peer=%d\n", id);
             }
-
-            if (ssl)
-            {
-                unsigned long err_code = 0;
-                tlsmanager.waitFor(SSL_SHUTDOWN, hSocket, ssl, (DEFAULT_CONNECT_TIMEOUT / 1000), err_code);
-                SSL_free(ssl);
-                ssl = NULL;
-            }
-            CloseSocket(hSocket);
         }
     }
 
@@ -1364,6 +1352,12 @@ void CreateNodeFromAcceptedSocket(SOCKET hSocket,
         return;
     }
 
+    if (!IsReachable(addr))
+    {
+        CloseSocket(hSocket);
+        return;
+    }
+
     if (nInbound >= nMaxInbound)
     {
         if (!AttemptToEvictConnection(whitelisted)) {
@@ -1831,15 +1825,19 @@ void ThreadOpenConnections()
         CSemaphoreGrant grant(*semOutbound);
         boost::this_thread::interruption_point();
 
-        // Add seed nodes if DNS seeds are all down (an infrastructure attack?).
-        // if (addrman.size() == 0 && (GetTime() - nStart > 60)) {
+        // Add known valid seed at the time this release
         if (GetTime() - nStart > 60) {
             static bool done = false;
             if (!done) {
                 LogPrintf("Adding fixed seed nodes as DNS doesn't seem to be available.\n");
-                CNetAddr local;
-                local.SetInternal("fixedseeds");
-                addrman.Add(ConvertSeeds(Params().FixedSeeds()), local);
+                std::vector<CAddress> vFixedSeeds = ConvertSeeds(Params().FixedSeeds());
+                BOOST_FOREACH(CAddress fixedSeed, vFixedSeeds) {
+                    std::vector<CAddress> vFixedSeed;
+                    vFixedSeed.push_back(fixedSeed);
+                    CService seedSource;
+                    Lookup(fixedSeed.ToString().c_str(), seedSource, Params().GetDefaultPort(), false);
+                    addrman.Add(vFixedSeed, seedSource);
+                }
                 done = true;
             }
         }
@@ -1882,8 +1880,9 @@ void ThreadOpenConnections()
             if (nTries > 100)
                 break;
 
-            if (IsLimited(addr))
+            if (!IsReachable(addr)) {
                 continue;
+            }
 
             // only consider very recently tried nodes after 30 failed attempts
             if (nANow - addr.nLastTry < 600 && nTries < 30)
@@ -1986,6 +1985,10 @@ bool OpenNetworkConnection(const CAddress& addrConnect, CSemaphoreGrant *grantOu
     //
     boost::this_thread::interruption_point();
     if (!fNetworkActive) {
+        return false;
+    }
+
+    if (!IsReachable(addrConnect)) {
         return false;
     }
 
@@ -2360,15 +2363,15 @@ void StartNode(boost::thread_group& threadGroup, CScheduler& scheduler)
     // Send and receive from sockets, accept connections
     threadGroup.create_thread(boost::bind(&TraceThread<void (*)()>, "net", &ThreadSocketHandler));
 
+    if (GetBoolArg("-i2pacceptincoming", true) && m_i2p_sam_session.get() != nullptr) {
+        threadGroup.create_thread(boost::bind(&TraceThread<void (*)()>, "i2paccept", &ThreadI2PAcceptIncoming));
+    }
+
     // Initiate outbound connections from -addnode
     threadGroup.create_thread(boost::bind(&TraceThread<void (*)()>, "addcon", &ThreadOpenAddedConnections));
 
     // Initiate outbound connections
     threadGroup.create_thread(boost::bind(&TraceThread<void (*)()>, "opencon", &ThreadOpenConnections));
-
-    if (GetBoolArg("-i2pacceptincoming", true) && m_i2p_sam_session.get() != nullptr) {
-        threadGroup.create_thread(boost::bind(&TraceThread<void (*)()>, "i2paccept", &ThreadI2PAcceptIncoming));
-    }
 
     // Process messages
     threadGroup.create_thread(boost::bind(&TraceThread<void (*)()>, "msghand", &ThreadMessageHandler));

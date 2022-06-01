@@ -121,8 +121,8 @@ Session::Session(const fs::path& private_key_file,
 
 Session::~Session()
 {
-    LOCK(cs_i2p);
-    Disconnect();
+    // LOCK(cs_i2p);
+    // Disconnect();
 }
 
 bool Session::Listen(Connection& conn)
@@ -145,9 +145,12 @@ bool Session::Accept(Connection& conn)
     try {
         while (true) {
 
+            // boost::this_thread::interruption_point();
             if (ShutdownRequested()) {
-                break;
+                Disconnect();
+                return false;
             }
+
 
             Sock::Event occurred;
             if (!conn.sock->Wait(std::chrono::milliseconds{MAX_WAIT_FOR_IO}, Sock::RECV, &occurred)) {
@@ -161,6 +164,11 @@ bool Session::Accept(Connection& conn)
 
             const std::string& peer_dest =
                 conn.sock->RecvUntilTerminator('\n', std::chrono::milliseconds{MAX_WAIT_FOR_IO}, MAX_MSG_SIZE);
+
+            if (ShutdownRequested()) {
+                Disconnect();
+                return false;
+            }
 
             conn.peer = CService(DestB64ToAddr(peer_dest), Params().GetDefaultPort());
             return true;
@@ -263,8 +271,9 @@ Session::Reply Session::SendRequestAndGetReply(const Sock& sock,
     LogPrint("i2p","I2P: Handshake reply %s\n", reply.full);
 
     if (check_result_ok && reply.Get("RESULT") != "OK") {
-        throw std::runtime_error(
-            strprintf("Unexpected reply to \"%s\": \"%s\"", request, reply.full));
+        if (!ShutdownRequested()) {
+            throw std::runtime_error(strprintf("Unexpected reply to \"%s\": \"%s\"", request, reply.full));
+        }
     }
 
     return reply;
@@ -339,6 +348,8 @@ Binary Session::MyDestination() const
 
 void Session::CreateIfNotCreatedAlready()
 {
+    LOCK(cs_i2p);
+
     std::string errmsg;
     if (m_control_sock->IsConnected(errmsg)) {
         return;
@@ -392,15 +403,27 @@ std::unique_ptr<Sock> Session::StreamAccept()
 
 void Session::Disconnect()
 {
-    if (m_control_sock->Get() != INVALID_SOCKET) {
-        if (m_session_id.empty()) {
-            LogPrint("i2p","I2P: Destroying incomplete session\n");
-        } else {
-            LogPrint("i2p","I2P: Destroying session %s\n", m_session_id);
+    LOCK(cs_i2p);
+    try
+    {
+        if (m_control_sock->Get() != INVALID_SOCKET) {
+            if (m_session_id.empty()) {
+                LogPrint("i2p","I2P: Destroying incomplete session\n");
+            } else {
+                LogPrint("i2p","I2P: Destroying session %s\n", m_session_id);
+            }
         }
+        m_control_sock->Reset();
+        m_session_id.clear();
     }
-    m_control_sock->Reset();
-    m_session_id.clear();
+    catch(std::bad_alloc&)
+    {
+        // when the node is shutting down, the call above might use invalid memory resulting in a
+        // std::bad_alloc exception when instantiating internal objs for handling log category
+        LogPrintf("(node is probably shutting down) Destroying session=%d\n", m_session_id);
+    }
+
+
 }
 } // namespace sam
 } // namespace i2p

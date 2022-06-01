@@ -200,9 +200,6 @@ enum
 
 bool IsPeerAddrLocalGood(CNode *pnode);
 void AdvertizeLocal(CNode *pnode);
-void SetLimited(enum Network net, bool fLimited = true);
-bool IsLimited(enum Network net);
-bool IsLimited(const CNetAddr& addr);
 bool AddLocal(const CService& addr, int nScore = LOCAL_NONE);
 bool AddLocal(const CNetAddr& addr, int nScore = LOCAL_NONE);
 bool RemoveLocal(const CService& addr);
@@ -754,7 +751,7 @@ public:
         }
     }
 
-    void CloseSocketDisconnect();
+    void CloseSocketDisconnect(bool sendShutDownSSL = true);
 
     // Denial-of-service detection/prevention
     // The idea is to detect peers that are behaving
